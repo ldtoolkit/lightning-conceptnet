@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/../babelnet-lite.py/.idea/babelnet-lite.iml" filepath="$PROJECT_DIR$/../babelnet-lite.py/.idea/babelnet-lite.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../conceptnet-lite/.idea/conceptnet-lite.iml" filepath="$PROJECT_DIR$/../conceptnet-lite/.idea/conceptnet-lite.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../legdb/.idea/legdb.iml" filepath="$PROJECT_DIR$/../legdb/.idea/legdb.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/lightning-conceptnet.iml" filepath="$PROJECT_DIR$/.idea/lightning-conceptnet.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../pynndb-new/.idea/pynndb-new.iml" filepath="$PROJECT_DIR$/../pynndb-new/.idea/pynndb-new.iml" />
+    </modules>
+  </component>
+</project>
