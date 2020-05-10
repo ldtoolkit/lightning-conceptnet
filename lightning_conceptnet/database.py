@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from subprocess import call
 from sys import maxsize
-from typing import Union, Optional, Generator, Tuple, Mapping, Any, List, Collection, Dict, Type
+from typing import Union, Optional, Generator, Tuple, Mapping, Any, List, Collection, Dict, Type, NamedTuple
 import csv
 import re
 import sys
@@ -21,11 +20,6 @@ from lightning_conceptnet.exceptions import (
 
 
 CONCEPTNET_EDGE_COUNT = 34074917
-
-
-CSVLineTuple = Tuple[str, str, str, str]
-CSVLineTupleGenerator = Generator[CSVLineTuple, None, None]
-Transaction = legdb.Transaction
 
 
 @dataclass
@@ -54,6 +48,21 @@ class Assertion(legdb.Edge):
     surfaceStart: Optional[str] = None
     surfaceText: Optional[str] = None
     _node_class = Concept
+
+
+CSVLineTuple = Tuple[str, str, str, str]
+CSVLineTupleGenerator = Generator[CSVLineTuple, None, None]
+Transaction = legdb.Transaction
+
+
+class EdgeTuple(NamedTuple):
+    assertion: Assertion
+    start_concept: Concept
+    end_concept: Optional[Concept]
+    external_url: str
+
+
+EdgeTupleGenerator = Generator[EdgeTuple, None, None]
 
 
 class AssertionIndexBy(Enum):
@@ -299,14 +308,44 @@ class LegDBDatabase(legdb.database.Database):
     def _extract_relation_name(uri: str) -> str:
         return _to_snake_case(uri[3:])
 
+    def _edges(
+            self,
+            dump_path: Path,
+            count: Optional[int] = None,
+            languages: Optional[Collection[str]] = None,
+    ) -> EdgeTupleGenerator:
+        edge_parts = self._edge_parts(dump_path=dump_path, count=count)
+        for relation_uri, start_uri, end_uri, edge_data in edge_parts:
+            relation_name = self._extract_relation_name(relation_uri)
+            is_end_uri_external_url = relation_name == Relation.EXTERNAL_URL
+            start_concept = Concept.from_uri(start_uri, db=self)
+            if is_end_uri_external_url:
+                end_concept = None
+                external_url = end_uri
+            else:
+                end_concept = Concept.from_uri(end_uri, db=self)
+                external_url = None
+            language_match = (
+                    not languages or
+                    (start_concept.language in languages and
+                     (end_concept is None or end_concept.language in languages))
+            )
+            if language_match:
+                edge_data = ujson.loads(edge_data)
+                assertion = Assertion(relation=relation_name, db=self, **edge_data)
+                yield EdgeTuple(
+                    assertion=assertion,
+                    start_concept=start_concept,
+                    end_concept=end_concept,
+                    external_url=external_url,
+                )
+
     def _initial_save_concept(self, concept: Concept, txn: Transaction) -> bytes:
         result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value, txn=txn)
         if result is None:
-            self._entity_count[Concept] += 1
             oid = self.save(concept, return_oid=True, txn=txn)
         else:
             oid = result.oid
-        self._append_sample(concept)
         return oid
 
     def _add_external_url_to_concept(self, concept_oid: bytes, url: str, txn: Transaction) -> None:
@@ -317,12 +356,12 @@ class LegDBDatabase(legdb.database.Database):
         self.save(concept, txn=txn)
 
     def _initial_save_assertion(self, assertion: Assertion, txn: Transaction) -> None:
-        self._entity_count[Assertion] += 1
         self.save(assertion, txn=txn)
         self._append_sample(assertion)
 
     def _append_sample(self, entity: Union[legdb.Node, legdb.Edge]):
         cls = type(entity)
+        self._entity_count[cls] += 1
         if self._entity_count[cls] % self._training_sample_period[cls] == 0:
             sample = entity.to_doc().out
             self._training_samples[cls].append(sample)
@@ -336,6 +375,23 @@ class LegDBDatabase(legdb.database.Database):
                     (ZSTD_SAMPLES_SIZE - self._training_samples_size[cls])
                 )
 
+    def train_compression(
+            self,
+            dump_path: Union[Path, str],
+            edge_count: Optional[int] = CONCEPTNET_EDGE_COUNT,
+            languages: Optional[Collection[str]] = None,
+    ):
+        logger.info("Collect samples for training compression")
+        edges = enumerate(self._edges(dump_path=dump_path, count=edge_count, languages=languages))
+        for _, edge in tqdm(edges, unit=' edges', total=edge_count):
+            self._append_sample(edge.start_concept)
+            if edge.end_concept is not None:
+                self._append_sample(edge.end_concept)
+            self._append_sample(edge.assertion)
+        logger.info("Train compression")
+        self.compress(legdb.Node, training_samples=self._training_samples[Concept])
+        self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
+
     def load(
             self,
             dump_path: Union[Path, str],
@@ -343,45 +399,24 @@ class LegDBDatabase(legdb.database.Database):
             languages: Optional[Collection[str]] = None,
             compress: bool = True,
     ) -> None:
-        logger.info("Load lightning-conceptnet database from dump")
         dump_path = Path(dump_path).expanduser().resolve()
-        edges = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
-        with self.write_transaction as txn:
-            for _, (relation_uri, start_uri, end_uri, edge_data) in tqdm(edges, unit=' edges', total=edge_count):
-                relation_name = self._extract_relation_name(relation_uri)
-                is_end_uri_external_url = relation_name == Relation.EXTERNAL_URL
-                start_concept = Concept.from_uri(start_uri, db=self)
-                if is_end_uri_external_url:
-                    end_concept = None
-                else:
-                    end_concept = Concept.from_uri(end_uri, db=self)
-                language_match = (
-                        not languages or
-                        (start_concept.language in languages and
-                         (end_concept is None or end_concept.language in languages))
-                )
-                if language_match:
-                    start_concept_id = self._initial_save_concept(start_concept, txn=txn)
-                    if is_end_uri_external_url:
-                        self._add_external_url_to_concept(concept_oid=start_concept_id, url=end_uri, txn=txn)
-                    elif end_concept is not None:
-                        end_concept_id = self._initial_save_concept(end_concept, txn=txn)
-                        edge_data = ujson.loads(edge_data)
-                        assertion = Assertion(
-                            start_id=start_concept_id,
-                            end_id=end_concept_id,
-                            relation=relation_name,
-                            db=self,
-                            **edge_data,
-                        )
-                        self._initial_save_assertion(assertion, txn=txn)
-        call(["du", "-h", self._path])
-        logger.info("Compress lightning-conceptnet database")
+
         if compress:
-            self.compress(legdb.Node, training_samples=self._training_samples[Concept])
-            self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
-            logger.info("Vacuum lightning-conceptnet database")
-            self.vacuum()
+            self.train_compression(dump_path=dump_path, edge_count=edge_count, languages=languages)
+
+        logger.info("Load lightning-conceptnet database from dump")
+        with self.write_transaction as txn:
+            edges = enumerate(self._edges(dump_path=dump_path, count=edge_count, languages=languages))
+            for _, edge in tqdm(edges, unit=' edges', total=edge_count):
+                start_concept_id = self._initial_save_concept(edge.start_concept, txn=txn)
+                if edge.external_url is not None:
+                    self._add_external_url_to_concept(concept_oid=start_concept_id, url=edge.external_url, txn=txn)
+                elif edge.end_concept is not None:
+                    end_concept_id = self._initial_save_concept(edge.end_concept, txn=txn)
+                    edge.assertion.start_id = start_concept_id
+                    edge.assertion.end_id = end_concept_id
+                    self._initial_save_assertion(edge.assertion, txn=txn)
+
         logger.info("Lightning-conceptnet database building finished")
 
 
