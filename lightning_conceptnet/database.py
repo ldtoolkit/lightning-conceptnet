@@ -110,11 +110,6 @@ class Relation:
     EXTERNAL_URL = 'external_url'
 
 
-class DbOpenMode(Enum):
-    CREATE = 'create'
-    READ = 'read'
-
-
 def _construct_db_path(parent_dir_path: Path) -> Path:
     db_base_name = "conceptnet.db"
     return parent_dir_path / db_base_name
@@ -154,11 +149,11 @@ def _get_db_path_for_db_read(path_hint: Path) -> Path:
         raise_file_not_found_error(path_hint)
 
 
-def get_db_path(path_hint: Union[Path, str], db_open_mode: DbOpenMode) -> Path:
+def get_db_path(path_hint: Union[Path, str], db_open_mode: legdb.DbOpenMode) -> Path:
     path_to_check = Path(path_hint).expanduser().resolve()
-    if db_open_mode == DbOpenMode.CREATE:
+    if db_open_mode == legdb.DbOpenMode.WRITE:
         return _get_db_path_for_db_creation(path_hint=path_to_check)
-    elif db_open_mode == DbOpenMode.READ:
+    elif db_open_mode == legdb.DbOpenMode.READ:
         return _get_db_path_for_db_read(path_hint=path_to_check)
     else:
         raise ValueError(f"db_open_mode not supported: '{db_open_mode}")
@@ -175,8 +170,17 @@ ZSTD_SAMPLES_SIZE = 2**27  # 128 MiB
 
 
 class LegDBDatabase(legdb.database.Database):
-    def __init__(self, path: Union[Path, str], config: Optional[Mapping[str, Any]] = None):
-        super().__init__(path=path, config=config)
+    def __init__(
+            self,
+            path: Union[Path, str],
+            db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ,
+            config: Optional[Mapping[str, Any]] = None
+    ):
+        if config is None:
+            config = {}
+        config.setdefault("readahead", False)
+        config.setdefault("subdir", False)
+        super().__init__(path=path, db_open_mode=db_open_mode, config=config)
         indexes = [
             {
                 "what": legdb.Node,
@@ -295,26 +299,26 @@ class LegDBDatabase(legdb.database.Database):
     def _extract_relation_name(uri: str) -> str:
         return _to_snake_case(uri[3:])
 
-    def _initial_save_concept(self, concept: Concept) -> bytes:
-        result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value)
+    def _initial_save_concept(self, concept: Concept, txn: Transaction) -> bytes:
+        result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value, txn=txn)
         if result is None:
             self._entity_count[Concept] += 1
-            oid = self.save(concept, return_oid=True)
+            oid = self.save(concept, return_oid=True, txn=txn)
         else:
             oid = result.oid
         self._append_sample(concept)
         return oid
 
-    def _add_external_url_to_concept(self, concept_oid: bytes, url: str) -> None:
-        concept = self.get(Concept, concept_oid)
+    def _add_external_url_to_concept(self, concept_oid: bytes, url: str, txn: Transaction) -> None:
+        concept = self.get(Concept, concept_oid, txn=txn)
         if concept.external_url is None:
             concept.external_url = []
         concept.external_url.append(url)
-        self.save(concept)
+        self.save(concept, txn=txn)
 
-    def _initial_save_assertion(self, assertion: Assertion) -> None:
+    def _initial_save_assertion(self, assertion: Assertion, txn: Transaction) -> None:
         self._entity_count[Assertion] += 1
-        self.save(assertion)
+        self.save(assertion, txn=txn)
         self._append_sample(assertion)
 
     def _append_sample(self, entity: Union[legdb.Node, legdb.Edge]):
@@ -342,33 +346,35 @@ class LegDBDatabase(legdb.database.Database):
         logger.info("Load lightning-conceptnet database from dump")
         dump_path = Path(dump_path).expanduser().resolve()
         edges = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
-        for _, (relation_uri, start_uri, end_uri, edge_data) in tqdm(edges, unit=' edges', total=edge_count):
-            relation_name = self._extract_relation_name(relation_uri)
-            is_end_uri_external_url = relation_name == Relation.EXTERNAL_URL
-            start_concept = Concept.from_uri(start_uri, db=self)
-            if is_end_uri_external_url:
-                end_concept = None
-            else:
-                end_concept = Concept.from_uri(end_uri, db=self)
-            language_match = (
-                    not languages or
-                    (start_concept.language in languages and (end_concept is None or end_concept.language in languages))
-            )
-            if language_match:
-                start_concept_id = self._initial_save_concept(start_concept)
+        with self.write_transaction as txn:
+            for _, (relation_uri, start_uri, end_uri, edge_data) in tqdm(edges, unit=' edges', total=edge_count):
+                relation_name = self._extract_relation_name(relation_uri)
+                is_end_uri_external_url = relation_name == Relation.EXTERNAL_URL
+                start_concept = Concept.from_uri(start_uri, db=self)
                 if is_end_uri_external_url:
-                    self._add_external_url_to_concept(concept_oid=start_concept_id, url=end_uri)
-                elif end_concept is not None:
-                    end_concept_id = self._initial_save_concept(end_concept)
-                    edge_data = ujson.loads(edge_data)
-                    assertion = Assertion(
-                        start_id=start_concept_id,
-                        end_id=end_concept_id,
-                        relation=relation_name,
-                        db=self,
-                        **edge_data,
-                    )
-                    self._initial_save_assertion(assertion)
+                    end_concept = None
+                else:
+                    end_concept = Concept.from_uri(end_uri, db=self)
+                language_match = (
+                        not languages or
+                        (start_concept.language in languages and
+                         (end_concept is None or end_concept.language in languages))
+                )
+                if language_match:
+                    start_concept_id = self._initial_save_concept(start_concept, txn=txn)
+                    if is_end_uri_external_url:
+                        self._add_external_url_to_concept(concept_oid=start_concept_id, url=end_uri, txn=txn)
+                    elif end_concept is not None:
+                        end_concept_id = self._initial_save_concept(end_concept, txn=txn)
+                        edge_data = ujson.loads(edge_data)
+                        assertion = Assertion(
+                            start_id=start_concept_id,
+                            end_id=end_concept_id,
+                            relation=relation_name,
+                            db=self,
+                            **edge_data,
+                        )
+                        self._initial_save_assertion(assertion, txn=txn)
         call(["du", "-h", self._path])
         logger.info("Compress lightning-conceptnet database")
         if compress:
@@ -376,17 +382,21 @@ class LegDBDatabase(legdb.database.Database):
             self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
             logger.info("Vacuum lightning-conceptnet database")
             self.vacuum()
+        logger.info("Lightning-conceptnet database building finished")
 
 
 class LightningConceptNet:
     def __init__(
             self,
             path_hint: Union[Path, str],
-            db_open_mode: DbOpenMode = DbOpenMode.READ,
+            db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ,
             config: Optional[Mapping[str, Any]] = None,
     ):
+        if config is None:
+            config = {}
+        config.setdefault("writemap", db_open_mode == legdb.DbOpenMode.WRITE)
         path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
-        self._db = LegDBDatabase(path=path, config=config)
+        self._db = LegDBDatabase(path=path, db_open_mode=db_open_mode, config=config)
 
     def seek_one(
             self,
@@ -433,5 +443,5 @@ def build(
     logger.info("Create lightning-conceptnet database")
     database_size = 2**36  # 64 GiB
     config = {"map_size": database_size, "readahead": False, "subdir": False, "lock": False}
-    lcn = LightningConceptNet(database_path_hint, db_open_mode=DbOpenMode.CREATE, config=config)
+    lcn = LightningConceptNet(database_path_hint, db_open_mode=legdb.DbOpenMode.WRITE, config=config)
     lcn.load(dump_path=dump_path, edge_count=edge_count, languages=languages, compress=compress)
