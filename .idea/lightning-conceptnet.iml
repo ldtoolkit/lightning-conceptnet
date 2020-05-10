@@ -9,4 +9,10 @@
     <orderEntry type="module" module-name="conceptnet-lite" />
     <orderEntry type="module" module-name="pynndb-new" />
   </component>
+  <component name="PackageRequirementsSettings">
+    <option name="requirementsPath" value="" />
+  </component>
+  <component name="TestRunnerService">
+    <option name="PROJECT_TEST_RUNNER" value="pytest" />
+  </component>
 </module>

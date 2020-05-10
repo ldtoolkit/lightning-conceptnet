@@ -1,1 +1,1 @@
-from lightning_conceptnet.db import LightningConceptNet, Concept, Assertion, DbOpenMode
+from lightning_conceptnet.database import LightningConceptNet, Concept, Assertion, DbOpenMode, build
