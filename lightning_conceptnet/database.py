@@ -429,7 +429,6 @@ class LightningConceptNet:
     ):
         if config is None:
             config = {}
-        config.setdefault("writemap", db_open_mode == legdb.DbOpenMode.WRITE)
         path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
         self._db = LegDBDatabase(path=path, db_open_mode=db_open_mode, config=config)
 
@@ -476,7 +475,7 @@ def build(
     import stackprinter
     stackprinter.set_excepthook(style='darkbg2')
     logger.info("Create lightning-conceptnet database")
-    database_size = 2**36  # 64 GiB
+    database_size = 20 * 2**30  # 20 GiB
     config = {"map_size": database_size, "readahead": False, "subdir": False, "lock": False}
     lcn = LightningConceptNet(database_path_hint, db_open_mode=legdb.DbOpenMode.WRITE, config=config)
     lcn.load(dump_path=dump_path, edge_count=edge_count, languages=languages, compress=compress)
