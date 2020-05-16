@@ -11,6 +11,7 @@ tqdm = "^4.45.0"
 pynndb = "^1.1.5"
 typer = "^0.2.1"
 loguru = "^0.4.1"
+mashumaro = "^1.12"
 
 [tool.poetry.scripts]
 lightning-conceptnet-build = "lightning_conceptnet.cli:app"
