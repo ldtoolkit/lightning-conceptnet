@@ -392,15 +392,15 @@ class LightningConceptNetDatabase(legdb.database.Database):
     ) -> None:
         dump_path = Path(dump_path).expanduser().resolve()
 
+        if edge_count is None:
+            edge_count = self.line_count(dump_path)
+
         if compress:
             self.train_compression(dump_path=dump_path, edge_count=edge_count, languages=languages)
 
         self._start_database_creation_workers(languages=languages)
 
         logger.info("Load lightning-conceptnet database from dump")
-
-        if edge_count is None:
-            edge_count = self.line_count(dump_path)
 
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
