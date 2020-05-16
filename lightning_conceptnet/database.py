@@ -1,25 +1,26 @@
 from __future__ import annotations
 
+from multiprocessing import Process
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from sys import maxsize
 from typing import Union, Optional, Generator, Tuple, Mapping, Any, List, Collection, Dict, Type, NamedTuple
 import csv
 import re
 import sys
+import os
 
+import zmq
 from loguru import logger
 from tqdm import tqdm
 import legdb
 import legdb.database
 import ujson
 
+from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
-
-
-CONCEPTNET_EDGE_COUNT = 34074917
+from lightning_conceptnet.uri import uri_to_label, split_uri, get_uri_language
 
 
 @dataclass
@@ -30,10 +31,17 @@ class Concept(legdb.Node):
     external_url: Optional[List[str]] = None
 
     @classmethod
-    def from_uri(cls: Type[Concept], uri: str, db: Optional[LegDBDatabase] = None) -> Concept:
-        split_uri = uri.split("/", maxsplit=4)
-        language, label = split_uri[2:4]
-        sense = split_uri[4] if len(split_uri) == 5 else "-"
+    def from_uri(cls: Type[Concept], uri: str, db: Optional[LightningConceptNetDatabase] = None) -> Concept:
+        label = uri_to_label(uri)
+        pieces = split_uri(uri)
+        language = get_uri_language(uri)
+        if len(pieces) > 3:
+            sense = pieces[3]
+            if len(pieces) > 4 and pieces[4] in ("wp", "wn"):
+                sense += ", " + pieces[-1]
+        else:
+            sense = "-"
+
         return cls(db=db, label=label, language=language, sense=sense)
 
 
@@ -77,48 +85,6 @@ class ConceptIndexBy(Enum):
     sense = "by_sense"
 
 
-class Relation:
-    """Names of non-deprecated relations.
-
-    See: https://github.com/commonsense/conceptnet5/wiki/Relations.
-    """
-
-    RELATED_TO = 'related_to'
-    FORM_OF = 'form_of'
-    IS_A = 'is_a'
-    PART_OF = 'part_of'
-    HAS_A = 'has_a'
-    USED_FOR = 'used_for'
-    CAPABLE_OF = 'capable_of'
-    AT_LOCATION = 'at_location'
-    CAUSES = 'causes'
-    HAS_SUBEVENT = 'has_subevent'
-    HAS_FIRST_SUBEVENT = 'has_first_subevent'
-    HAS_LAST_SUBEVENT = 'has_last_subevent'
-    HAS_PREREQUISITE = 'has_prerequisite'
-    HAS_PROPERTY = 'has_property'
-    MOTIVATED_BY_GOAL = 'motivated_by_goal'
-    OBSTRUCTED_BY = 'obstructed_by'
-    DESIRES = 'desires'
-    CREATED_BY = 'created_by'
-    SYNONYM = 'synonym'
-    ANTONYM = 'antonym'
-    DISTINCT_FROM = 'distinct_from'
-    DERIVED_FROM = 'derived_from'
-    SYMBOL_OF = 'symbol_of'
-    DEFINED_AS = 'defined_as'
-    MANNER_OF = 'manner_of'
-    LOCATED_NEAR = 'located_near'
-    HAS_CONTEXT = 'has_context'
-    SIMILAR_TO = 'similar_to'
-    ETYMOLOGICALLY_RELATED_TO = 'etymologically_related_to'
-    ETYMOLOGICALLY_DERIVED_FROM = 'etymologically_derived_from'
-    CAUSES_DESIRE = 'causes_desire'
-    MADE_OF = 'made_of'
-    RECEIVES_ACTION = 'receives_action'
-    EXTERNAL_URL = 'external_url'
-
-
 def _construct_db_path(parent_dir_path: Path) -> Path:
     db_base_name = "conceptnet.db"
     return parent_dir_path / db_base_name
@@ -144,7 +110,7 @@ def _check_existing_db_path_for_db_read(existing_path: Path) -> bool:
         raise_is_a_directory_error(existing_path)
 
 
-def _get_db_path_for_db_read(path_hint: Path) -> Path:
+def _get_db_path_for_db_read_write(path_hint: Path) -> Path:
     if path_hint.is_dir():
         path_to_check = _construct_db_path(parent_dir_path=path_hint)
         if path_to_check.exists() and _check_existing_db_path_for_db_read(path_to_check):
@@ -160,10 +126,10 @@ def _get_db_path_for_db_read(path_hint: Path) -> Path:
 
 def get_db_path(path_hint: Union[Path, str], db_open_mode: legdb.DbOpenMode) -> Path:
     path_to_check = Path(path_hint).expanduser().resolve()
-    if db_open_mode == legdb.DbOpenMode.WRITE:
+    if db_open_mode == legdb.DbOpenMode.CREATE:
         return _get_db_path_for_db_creation(path_hint=path_to_check)
-    elif db_open_mode == legdb.DbOpenMode.READ:
-        return _get_db_path_for_db_read(path_hint=path_to_check)
+    elif db_open_mode == legdb.DbOpenMode.READ_WRITE:
+        return _get_db_path_for_db_read_write(path_hint=path_to_check)
     else:
         raise ValueError(f"db_open_mode not supported: '{db_open_mode}")
 
@@ -178,11 +144,11 @@ ZSTD_COMPRESSION_LEVEL = 3
 ZSTD_SAMPLES_SIZE = 2**27  # 128 MiB
 
 
-class LegDBDatabase(legdb.database.Database):
+class LightningConceptNetDatabase(legdb.database.Database):
     def __init__(
             self,
             path: Union[Path, str],
-            db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ,
+            db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ_WRITE,
             config: Optional[Mapping[str, Any]] = None
     ):
         if config is None:
@@ -246,6 +212,7 @@ class LegDBDatabase(legdb.database.Database):
             Concept: 0,
             Assertion: 0,
         }
+        self._worker_processes = []
 
     def compress(
             self,
@@ -304,41 +271,30 @@ class LegDBDatabase(legdb.database.Database):
                     break
                 yield row[1:5]
 
-    @staticmethod
-    def _extract_relation_name(uri: str) -> str:
-        return _to_snake_case(uri[3:])
-
-    def _edges(
-            self,
-            dump_path: Path,
-            count: Optional[int] = None,
-            languages: Optional[Collection[str]] = None,
-    ) -> EdgeTupleGenerator:
-        edge_parts = self._edge_parts(dump_path=dump_path, count=count)
-        for relation_uri, start_uri, end_uri, edge_data in edge_parts:
-            relation_name = self._extract_relation_name(relation_uri)
-            is_end_uri_external_url = relation_name == Relation.EXTERNAL_URL
-            start_concept = Concept.from_uri(start_uri, db=self)
-            if is_end_uri_external_url:
-                end_concept = None
-                external_url = end_uri
-            else:
-                end_concept = Concept.from_uri(end_uri, db=self)
-                external_url = None
-            language_match = (
-                    not languages or
-                    (start_concept.language in languages and
-                     (end_concept is None or end_concept.language in languages))
+    def edge_from_edge_parts(self, edge_parts: CSVLineTuple, languages: Optional[Collection[str]] = None) -> EdgeTuple:
+        relation_uri, start_uri, end_uri, edge_data = edge_parts
+        is_end_uri_external_url = relation_uri == "/r/ExternalURL"
+        start_concept = Concept.from_uri(start_uri)
+        if is_end_uri_external_url:
+            end_concept = None
+            external_url = end_uri
+        else:
+            end_concept = Concept.from_uri(end_uri)
+            external_url = None
+        language_match = (
+                not languages or
+                (start_concept.language in languages and
+                 (end_concept is None or end_concept.language in languages))
+        )
+        if language_match:
+            edge_data = ujson.loads(edge_data)
+            assertion = Assertion(relation=relation_uri, **edge_data)
+            return EdgeTuple(
+                assertion=assertion,
+                start_concept=start_concept,
+                end_concept=end_concept,
+                external_url=external_url,
             )
-            if language_match:
-                edge_data = ujson.loads(edge_data)
-                assertion = Assertion(relation=relation_name, db=self, **edge_data)
-                yield EdgeTuple(
-                    assertion=assertion,
-                    start_concept=start_concept,
-                    end_concept=end_concept,
-                    external_url=external_url,
-                )
 
     def _initial_save_concept(self, concept: Concept, txn: Transaction) -> bytes:
         result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value, txn=txn)
@@ -355,11 +311,7 @@ class LegDBDatabase(legdb.database.Database):
         concept.external_url.append(url)
         self.save(concept, txn=txn)
 
-    def _initial_save_assertion(self, assertion: Assertion, txn: Transaction) -> None:
-        self.save(assertion, txn=txn)
-        self._append_sample(assertion)
-
-    def _append_sample(self, entity: Union[legdb.Node, legdb.Edge]):
+    def _append_sample(self, entity: Union[legdb.Node, legdb.Edge], edge_count: int):
         cls = type(entity)
         self._entity_count[cls] += 1
         if self._entity_count[cls] % self._training_sample_period[cls] == 0:
@@ -371,31 +323,70 @@ class LegDBDatabase(legdb.database.Database):
                 mean_sample_size = self._training_samples_size[cls] // len(self._training_samples[cls])
                 self._training_sample_period[cls] = max(
                     1,
-                    mean_sample_size * (CONCEPTNET_EDGE_COUNT - self._entity_count[Assertion]) //
+                    mean_sample_size * (edge_count - self._entity_count[Assertion]) //
                     (ZSTD_SAMPLES_SIZE - self._training_samples_size[cls])
                 )
 
     def train_compression(
             self,
             dump_path: Union[Path, str],
-            edge_count: Optional[int] = CONCEPTNET_EDGE_COUNT,
+            edge_count: Optional[int] = None,
             languages: Optional[Collection[str]] = None,
     ):
         logger.info("Collect samples for training compression")
-        edges = enumerate(self._edges(dump_path=dump_path, count=edge_count, languages=languages))
-        for _, edge in tqdm(edges, unit=' edges', total=edge_count):
-            self._append_sample(edge.start_concept)
+        edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
+        for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
+            edge = self.edge_from_edge_parts(edge_parts, languages=languages)
+            self._append_sample(edge.start_concept, edge_count=edge_count)
             if edge.end_concept is not None:
-                self._append_sample(edge.end_concept)
-            self._append_sample(edge.assertion)
+                self._append_sample(edge.end_concept, edge_count=edge_count)
+            self._append_sample(edge.assertion, edge_count=edge_count)
         logger.info("Train compression")
         self.compress(legdb.Node, training_samples=self._training_samples[Concept])
         self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
 
+    def save_edge_concepts(self, edge: EdgeTuple, txn: Transaction):
+        start_concept_id = self._initial_save_concept(edge.start_concept, txn=txn)
+        if edge.external_url is not None:
+            self._add_external_url_to_concept(concept_oid=start_concept_id, url=edge.external_url, txn=txn)
+        elif edge.end_concept is not None:
+            end_concept_id = self._initial_save_concept(edge.end_concept, txn=txn)
+            edge.assertion.start_id = start_concept_id
+            edge.assertion.end_id = end_concept_id
+
+    def _start_database_creation_workers(self, languages: Optional[Collection[str]]):
+        self._context = zmq.Context()
+        self._socket = self._context.socket(zmq.PUSH)
+        address = "tcp://127.0.0.1"
+        port = self._socket.bind_to_random_port(address)
+        for worker_i in range(len(os.sched_getaffinity(0)) - 1):
+            worker = DatabaseCreationWorker(f"{address}:{port}", database_path=self._path, config=self._config)
+            worker_process = Process(target=worker.run, args=(languages, ))
+            worker_process.start()
+            self._worker_processes.append(worker_process)
+
+    def _stop_database_creation_workers(self):
+        for worker_process in self._worker_processes:
+            worker_process.terminate()
+
+    @staticmethod
+    def line_count(file_path):
+        f = open(file_path, "rb")
+        result = 0
+        buf_size = 1024 * 1024
+        read_f = f.raw.read
+
+        buf = read_f(buf_size)
+        while buf:
+            result += buf.count(b"\n")
+            buf = read_f(buf_size)
+
+        return result
+
     def load(
             self,
             dump_path: Union[Path, str],
-            edge_count: Optional[int] = CONCEPTNET_EDGE_COUNT,
+            edge_count: Optional[int] = None,
             languages: Optional[Collection[str]] = None,
             compress: bool = True,
     ) -> None:
@@ -404,78 +395,17 @@ class LegDBDatabase(legdb.database.Database):
         if compress:
             self.train_compression(dump_path=dump_path, edge_count=edge_count, languages=languages)
 
+        self._start_database_creation_workers(languages=languages)
+
         logger.info("Load lightning-conceptnet database from dump")
-        with self.write_transaction as txn:
-            edges = enumerate(self._edges(dump_path=dump_path, count=edge_count, languages=languages))
-            for _, edge in tqdm(edges, unit=' edges', total=edge_count):
-                start_concept_id = self._initial_save_concept(edge.start_concept, txn=txn)
-                if edge.external_url is not None:
-                    self._add_external_url_to_concept(concept_oid=start_concept_id, url=edge.external_url, txn=txn)
-                elif edge.end_concept is not None:
-                    end_concept_id = self._initial_save_concept(edge.end_concept, txn=txn)
-                    edge.assertion.start_id = start_concept_id
-                    edge.assertion.end_id = end_concept_id
-                    self._initial_save_assertion(edge.assertion, txn=txn)
+
+        if edge_count is None:
+            edge_count = self.line_count(dump_path)
+
+        edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
+        for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
+            self._socket.send_pyobj(edge_parts)
+
+        self._stop_database_creation_workers()
 
         logger.info("Lightning-conceptnet database building finished")
-
-
-class LightningConceptNet:
-    def __init__(
-            self,
-            path_hint: Union[Path, str],
-            db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ,
-            config: Optional[Mapping[str, Any]] = None,
-    ):
-        if config is None:
-            config = {}
-        path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
-        self._db = LegDBDatabase(path=path, db_open_mode=db_open_mode, config=config)
-
-    def seek_one(
-            self,
-            entity: Union[Concept, Assertion],
-            txn: Optional[Transaction] = None,
-    ) -> Union[Concept, Assertion]:
-        return self._db.seek_one(entity=entity, txn=txn)
-
-    def seek(
-            self,
-            entity: Union[Concept, Assertion],
-            limit: int = maxsize,
-            txn: Optional[Transaction] = None,
-    ) -> Generator[Union[Concept, Assertion], None, None]:
-        yield from self._db.seek(entity=entity, limit=limit, txn=txn)
-
-    def range(
-            self,
-            lower: Optional[Union[Concept, Assertion]] = None,
-            upper: Optional[Union[Concept, Assertion]] = None,
-            index_name: Optional[str] = None,
-            inclusive: bool = True) -> Generator[Union[Concept, Assertion], None, None]:
-        yield from self._db.range(lower=lower, upper=upper, index_name=index_name, inclusive=inclusive)
-
-    def load(
-            self,
-            dump_path: Union[Path, str],
-            edge_count: Optional[int] = None,
-            languages: Optional[Collection[str]] = None,
-            compress: bool = True,
-    ):
-        self._db.load(dump_path=dump_path, edge_count=edge_count, languages=languages, compress=compress)
-
-
-def build(
-        database_path_hint: Union[Path, str],
-        dump_path: Union[Path, str],
-        edge_count: int = CONCEPTNET_EDGE_COUNT,
-        languages: Optional[Collection[str]] = None,
-        compress: bool = True,
-):
-    import stackprinter
-    stackprinter.set_excepthook(style='darkbg2')
-    logger.info("Create lightning-conceptnet database")
-    database_size = 20 * 2**30  # 20 GiB
-    config = {"map_size": database_size, "readahead": False, "subdir": False, "lock": False}
-    lcn = LightningConceptNet(database_path_hint, db_open_mode=legdb.DbOpenMode.WRITE, config=config)
-    lcn.load(dump_path=dump_path, edge_count=edge_count, languages=languages, compress=compress)

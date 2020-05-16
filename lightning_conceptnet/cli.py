@@ -12,7 +12,7 @@ app = typer.Typer()
 def build(
         database_path_hint: Path,
         dump_path: Path,
-        edge_count: int = lightning_conceptnet.database.CONCEPTNET_EDGE_COUNT,
+        edge_count: Optional[int] = None,
         languages: Optional[List[str]] = None,
         compress: bool = True,
 ):
