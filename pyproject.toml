@@ -8,10 +8,10 @@ license = "Apache-2.0"
 [tool.poetry.dependencies]
 python = "^3.6"
 tqdm = "^4.45.0"
-pynndb = "^1.1.5"
 typer = "^0.2.1"
 loguru = "^0.4.1"
 mashumaro = "^1.12"
+pynndb2 = "^2.0.7"
 
 [tool.poetry.scripts]
 lightning-conceptnet-build = "lightning_conceptnet.cli:app"
