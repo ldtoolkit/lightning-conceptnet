@@ -12,6 +12,7 @@ typer = "^0.2.1"
 loguru = "^0.4.1"
 mashumaro = "^1.12"
 pynndb2 = "^2.0.7"
+pyzmq = "^19.0.1"
 
 [tool.poetry.scripts]
 lightning-conceptnet-build = "lightning_conceptnet.cli:app"
