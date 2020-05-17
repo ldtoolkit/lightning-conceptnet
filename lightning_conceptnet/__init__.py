@@ -20,7 +20,7 @@ class LightningConceptNet:
     ):
         if config is None:
             config = {}
-        database_size = 25 * 2 ** 30
+        database_size = 2 ** 35
         config.setdefault("map_size", database_size)
         path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
         self._db = LightningConceptNetDatabase(path=path, db_open_mode=db_open_mode, config=config)

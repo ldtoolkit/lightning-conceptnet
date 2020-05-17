@@ -20,6 +20,7 @@ import ujson
 from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
+from lightning_conceptnet.nodes import standardized_concept_uri
 from lightning_conceptnet.uri import uri_to_label, split_uri, get_uri_language
 
 
@@ -27,22 +28,30 @@ from lightning_conceptnet.uri import uri_to_label, split_uri, get_uri_language
 class Concept(legdb.Node):
     label: Optional[str] = None
     language: Optional[str] = None
-    sense: Optional[str] = None
+    sense: Optional[List[str]] = None
     external_url: Optional[List[str]] = None
+
+    @property
+    def sense_label(self) -> str:
+        result = self.sense[0]
+        if len(self.sense) > 1 and self.sense[1] in ("wp", "wn"):
+            result += ", " + self.sense[-1]
+        return result
 
     @classmethod
     def from_uri(cls: Type[Concept], uri: str, db: Optional[LightningConceptNetDatabase] = None) -> Concept:
         label = uri_to_label(uri)
-        pieces = split_uri(uri)
         language = get_uri_language(uri)
-        if len(pieces) > 3:
-            sense = pieces[3]
-            if len(pieces) > 4 and pieces[4] in ("wp", "wn"):
-                sense += ", " + pieces[-1]
-        else:
-            sense = "-"
-
+        pieces = split_uri(uri)
+        sense = pieces[3:]
         return cls(db=db, label=label, language=language, sense=sense)
+
+    @property
+    def uri(self) -> str:
+        return standardized_concept_uri(self.language, self.label, *self.sense)
+
+    def __str__(self) -> str:
+        return self.uri
 
 
 @dataclass
