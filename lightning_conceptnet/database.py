@@ -15,7 +15,7 @@ from loguru import logger
 from tqdm import tqdm
 import legdb
 import legdb.database
-import ujson
+import orjson
 
 from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
@@ -282,7 +282,8 @@ class LightningConceptNetDatabase(legdb.database.Database):
 
     def edge_from_edge_parts(self, edge_parts: CSVLineTuple, languages: Optional[Collection[str]] = None) -> EdgeTuple:
         relation_uri, start_uri, end_uri, edge_data = edge_parts
-        is_end_uri_external_url = relation_uri == "/r/ExternalURL"
+        relation = relation_uri.replace("/r/", "", 1)
+        is_end_uri_external_url = relation == "ExternalURL"
         start_concept = Concept.from_uri(start_uri)
         if is_end_uri_external_url:
             end_concept = None
@@ -296,8 +297,8 @@ class LightningConceptNetDatabase(legdb.database.Database):
                  (end_concept is None or end_concept.language in languages))
         )
         if language_match:
-            edge_data = ujson.loads(edge_data)
-            assertion = Assertion(relation=relation_uri, **edge_data)
+            edge_data = orjson.loads(edge_data)
+            assertion = Assertion(relation=relation, **edge_data)
             return EdgeTuple(
                 assertion=assertion,
                 start_concept=start_concept,
@@ -324,7 +325,7 @@ class LightningConceptNetDatabase(legdb.database.Database):
         cls = type(entity)
         self._entity_count[cls] += 1
         if self._entity_count[cls] % self._training_sample_period[cls] == 0:
-            sample = entity.to_doc().out
+            sample = orjson.dumps(entity.to_doc().doc)
             self._training_samples[cls].append(sample)
             self._training_samples_size[cls] += sys.getsizeof(sample)
             period_recalculation_period = 128
