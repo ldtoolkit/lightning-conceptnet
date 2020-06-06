@@ -4,9 +4,10 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/../babelnet-lite.py/.idea/babelnet-lite.iml" filepath="$PROJECT_DIR$/../babelnet-lite.py/.idea/babelnet-lite.iml" />
       <module fileurl="file://$PROJECT_DIR$/../conceptnet-lite/.idea/conceptnet-lite.iml" filepath="$PROJECT_DIR$/../conceptnet-lite/.idea/conceptnet-lite.iml" />
+      <module fileurl="file://$USER_HOME$/.pyenv/versions/gremlin/lib64/python3.7/site-packages/gremlin_python/.idea/gremlin_python.iml" filepath="$USER_HOME$/.pyenv/versions/gremlin/lib64/python3.7/site-packages/gremlin_python/.idea/gremlin_python.iml" />
       <module fileurl="file://$PROJECT_DIR$/../legdb/.idea/legdb.iml" filepath="$PROJECT_DIR$/../legdb/.idea/legdb.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/lightning-conceptnet.iml" filepath="$PROJECT_DIR$/.idea/lightning-conceptnet.iml" />
-      <module fileurl="file://$PROJECT_DIR$/../pynndb-new/.idea/pynndb-new.iml" filepath="$PROJECT_DIR$/../pynndb-new/.idea/pynndb-new.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../pynndb2/.idea/pynndb2.iml" filepath="$PROJECT_DIR$/../pynndb2/.idea/pynndb2.iml" />
     </modules>
   </component>
 </project>

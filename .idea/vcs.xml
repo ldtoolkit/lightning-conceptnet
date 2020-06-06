@@ -5,5 +5,6 @@
     <mapping directory="$PROJECT_DIR$/../babelnet-lite.py" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../conceptnet-lite" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../pynndb-new" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../pynndb2" vcs="Git" />
   </component>
 </project>

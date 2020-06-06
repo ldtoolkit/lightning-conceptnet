@@ -7,7 +7,9 @@
     <orderEntry type="module" module-name="legdb" />
     <orderEntry type="module" module-name="babelnet-lite" />
     <orderEntry type="module" module-name="conceptnet-lite" />
-    <orderEntry type="module" module-name="pynndb-new" />
+    <orderEntry type="module" module-name="pynndb2" />
+    <orderEntry type="module" module-name="pynndb2" />
+    <orderEntry type="module" module-name="gremlin_python" />
   </component>
   <component name="PackageRequirementsSettings">
     <option name="requirementsPath" value="" />
