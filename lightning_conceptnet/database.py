@@ -17,6 +17,7 @@ import legdb
 import legdb.database
 import orjson
 
+from legdb.step import PynndbFilterStep
 from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
@@ -39,12 +40,12 @@ class Concept(legdb.Node):
         return result
 
     @classmethod
-    def from_uri(cls: Type[Concept], uri: str, db: Optional[LightningConceptNetDatabase] = None) -> Concept:
+    def from_uri(cls: Type[Concept], uri: str, database: Optional[LightningConceptNetDatabase] = None) -> Concept:
         label = uri_to_label(uri)
         language = get_uri_language(uri)
         pieces = split_uri(uri)
         sense = pieces[3:]
-        return cls(db=db, label=label, language=language, sense=sense)
+        return cls(database=database, label=label, language=language, sense=sense)
 
     @property
     def uri(self) -> str:
@@ -169,36 +170,42 @@ class LightningConceptNetDatabase(legdb.database.Database):
             {
                 "what": legdb.Node,
                 "name": ConceptIndexBy.language_label_sense.value,
+                "attrs": ["language", "label", "sense"],
                 "func": "!{language}|{label}|{sense}",
                 "duplicates": False,
             },
             {
                 "what": legdb.Node,
                 "name": ConceptIndexBy.language_label.value,
+                "attrs": ["language", "label"],
                 "func": "!{language}|{label}",
                 "duplicates": True,
             },
             {
                 "what": legdb.Node,
                 "name": ConceptIndexBy.label.value,
+                "attrs": ["label"],
                 "func": "{label}",
                 "duplicates": True,
             },
             {
                 "what": legdb.Node,
                 "name": ConceptIndexBy.language.value,
+                "attrs": ["language"],
                 "func": "{language}",
                 "duplicates": True,
             },
             {
                 "what": legdb.Node,
                 "name": ConceptIndexBy.sense.value,
+                "attrs": ["sense"],
                 "func": "{sense}",
                 "duplicates": True,
             },
             {
                 "what": legdb.Edge,
                 "name": AssertionIndexBy.relation.value,
+                "attrs": ["relation"],
                 "func": "{relation}",
                 "duplicates": True,
             },
@@ -244,33 +251,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             txn=txn,
         )
 
-    def get_indexes(self, entity: Union[Concept, Assertion]) -> List[str]:
-        result = []
-        if isinstance(entity, Concept):
-            if entity.language is not None and entity.label is not None and entity.sense is not None:
-                result.append(ConceptIndexBy.language_label_sense.value)
-            else:
-                if entity.language is not None and entity.label is not None:
-                    result.append(ConceptIndexBy.language_label.value)
-                else:
-                    if entity.label is not None:
-                        result.append(ConceptIndexBy.label.value)
-                    if entity.language is not None:
-                        result.append(ConceptIndexBy.language.value)
-                if entity.sense is not None:
-                    result.append(ConceptIndexBy.sense.value)
-        elif isinstance(entity, Assertion):
-            if entity.start_id is not None and entity.end_id is not None:
-                result.append(legdb.IndexBy.start_id_end_id.value)
-            else:
-                if entity.start_id is not None:
-                    result.append(legdb.IndexBy.start_id.value)
-                elif entity.end_id is not None:
-                    result.append(legdb.IndexBy.end_id.value)
-            if entity.relation is not None:
-                result.append(AssertionIndexBy.relation.value)
-        return result
-
     @staticmethod
     def _edge_parts(dump_path: Path, count: Optional[int] = None) -> CSVLineTupleGenerator:
         with open(str(dump_path), newline="") as f:
@@ -306,16 +286,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
                 external_url=external_url,
             )
 
-    def _initial_save_concept(self, concept: Concept, txn: Transaction) -> bytes:
-        result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value, txn=txn)
+    def _initial_save_concept(self, concept: Concept, txn: Transaction) -> str:
+        result = self.node_table.seek_one(ConceptIndexBy.language_label_sense.value, concept.to_doc(), txn=txn)
         if result is None:
             oid = self.save(concept, return_oid=True, txn=txn)
         else:
-            oid = result.oid
+            oid = result.key
         return oid
 
-    def _add_external_url_to_concept(self, concept_oid: bytes, url: str, txn: Transaction) -> None:
-        concept = self.get(Concept, concept_oid, txn=txn)
+    def _add_external_url_to_concept(self, concept_oid: str, url: str, txn: Transaction) -> None:
+        concept = self.get(Concept, concept_oid.encode(), txn=txn)
         if concept.external_url is None:
             concept.external_url = []
         concept.external_url.append(url)
