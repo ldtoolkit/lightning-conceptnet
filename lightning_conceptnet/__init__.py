@@ -26,23 +26,25 @@ class LightningConceptNet:
         self._db = LightningConceptNetDatabase(path=path, db_open_mode=db_open_mode, config=config)
 
     @property
-    def read_transaction(self) -> Transaction:
+    def _read_transaction(self) -> Transaction:
         return self._db.read_transaction
 
-    def concept(self, txn: Optional[Transaction] = None):
+    @property
+    def concept(self):
         return StepBuilder(
             database=self._db,
             node_cls=Concept,
             edge_cls=Assertion,
-            txn=txn,
+            txn=self._read_transaction,
         ).source(Concept)
 
-    def assertion(self, txn: Optional[Transaction] = None):
+    @property
+    def assertion(self):
         return StepBuilder(
             database=self._db,
             node_cls=Concept,
             edge_cls=Assertion,
-            txn=txn,
+            txn=self._read_transaction,
         ).source(Assertion)
 
     def load(

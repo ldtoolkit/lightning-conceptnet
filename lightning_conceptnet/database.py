@@ -17,12 +17,12 @@ import legdb
 import legdb.database
 import orjson
 
-from legdb.step import PynndbFilterStep
 from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
 from lightning_conceptnet.nodes import standardized_concept_uri
 from lightning_conceptnet.uri import uri_to_label, split_uri, get_uri_language
+from pynndb import write_transaction
 
 
 @dataclass
@@ -323,6 +323,11 @@ class LightningConceptNetDatabase(legdb.database.Database):
             edge_count: Optional[int] = None,
             languages: Optional[Collection[str]] = None,
     ):
+        @write_transaction
+        def compress(db, txn=None):
+            self.compress(legdb.Node, training_samples=self._training_samples[Concept], txn=txn)
+            self.compress(legdb.Edge, training_samples=self._training_samples[Assertion], txn=txn)
+
         logger.info("Collect samples for training compression")
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
@@ -332,8 +337,7 @@ class LightningConceptNetDatabase(legdb.database.Database):
                 self._append_sample(edge.end_concept, edge_count=edge_count)
             self._append_sample(edge.assertion, edge_count=edge_count)
         logger.info("Train compression")
-        self.compress(legdb.Node, training_samples=self._training_samples[Concept])
-        self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
+        compress(self._db)
 
     def save_edge_concepts(self, edge: EdgeTuple, txn: Transaction):
         start_concept_id = self._initial_save_concept(edge.start_concept, txn=txn)

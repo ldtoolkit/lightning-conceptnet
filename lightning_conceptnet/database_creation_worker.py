@@ -5,7 +5,9 @@ from typing import Optional, Mapping, Any, Collection
 import zmq
 
 import legdb
+from legdb import Transaction
 from lightning_conceptnet import database
+from pynndb import write_transaction
 
 
 class DatabaseCreationWorker:
@@ -23,13 +25,11 @@ class DatabaseCreationWorker:
         self._socket = None
         self._edges = []
 
-    def _save_edges(self):
-        with self._db.write_transaction as txn:
-            for edge in self._edges:
-                self._db.save_edge_concepts(edge=edge, txn=txn)
-        with self._db.write_transaction as txn:
-            for edge in self._edges:
-                self._db.save(edge.assertion, txn=txn)
+    def _save_edges(self, txn: Transaction):
+        for edge in self._edges:
+            self._db.save_edge_concepts(edge=edge, txn=txn)
+        for edge in self._edges:
+            self._db.save(edge.assertion, txn=txn)
         self._db.sync()
         self._edges.clear()
 
@@ -39,6 +39,10 @@ class DatabaseCreationWorker:
         raise KeyboardInterrupt
 
     def run(self, languages: Optional[Collection[str]]):
+        @write_transaction
+        def save_edges(db, txn=None):
+            self._save_edges(txn=txn)
+
         signal(SIGTERM, self.handle_sigterm)
         self._db = database.LightningConceptNetDatabase(
             path=self._database_path,
@@ -55,6 +59,6 @@ class DatabaseCreationWorker:
                 edge = self._db.edge_from_edge_parts(edge_parts, languages=languages)
                 self._edges.append(edge)
                 if len(self._edges) == edge_batch_count:
-                    self._save_edges()
+                    save_edges(self._db._db)
         except KeyboardInterrupt:
-            self._save_edges()
+            save_edges(self._db._db)
