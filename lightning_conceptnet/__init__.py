@@ -20,29 +20,31 @@ class LightningConceptNet:
     ):
         if config is None:
             config = {}
-        database_size = 2 ** 35
+        database_size = 2 ** 28
         config.setdefault("map_size", database_size)
         path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
         self._db = LightningConceptNetDatabase(path=path, db_open_mode=db_open_mode, config=config)
 
     @property
-    def read_transaction(self) -> Transaction:
+    def _read_transaction(self) -> Transaction:
         return self._db.read_transaction
 
-    def concept(self, txn: Optional[Transaction] = None):
+    @property
+    def concept(self):
         return StepBuilder(
             database=self._db,
             node_cls=Concept,
             edge_cls=Assertion,
-            txn=txn,
+            txn=self._read_transaction,
         ).source(Concept)
 
-    def assertion(self, txn: Optional[Transaction] = None):
+    @property
+    def assertion(self):
         return StepBuilder(
             database=self._db,
             node_cls=Concept,
             edge_cls=Assertion,
-            txn=txn,
+            txn=self._read_transaction,
         ).source(Assertion)
 
     def load(
