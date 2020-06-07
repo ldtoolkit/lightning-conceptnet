@@ -162,57 +162,63 @@ class LightningConceptNetDatabase(legdb.database.Database):
             config: Optional[Mapping[str, Any]] = None,
             n_jobs: int = len(os.sched_getaffinity(0)),
     ):
+        @write_transaction
+        def ensure_indexes(db, txn=None):
+            indexes = [
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language_label_sense.value,
+                    "attrs": ["language", "label", "sense"],
+                    "func": "!{language}|{label}|{sense}",
+                    "duplicates": False,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language_label.value,
+                    "attrs": ["language", "label"],
+                    "func": "!{language}|{label}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.label.value,
+                    "attrs": ["label"],
+                    "func": "{label}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language.value,
+                    "attrs": ["language"],
+                    "func": "{language}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.sense.value,
+                    "attrs": ["sense"],
+                    "func": "{sense}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.relation.value,
+                    "attrs": ["relation"],
+                    "func": "{relation}",
+                    "duplicates": True,
+                },
+            ]
+            for index in indexes:
+                self.ensure_index(**index, txn=txn)
+
         if config is None:
             config = {}
         config.setdefault("readahead", False)
         config.setdefault("subdir", False)
         super().__init__(path=path, db_open_mode=db_open_mode, config=config, n_jobs=n_jobs)
-        indexes = [
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language_label_sense.value,
-                "attrs": ["language", "label", "sense"],
-                "func": "!{language}|{label}|{sense}",
-                "duplicates": False,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language_label.value,
-                "attrs": ["language", "label"],
-                "func": "!{language}|{label}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.label.value,
-                "attrs": ["label"],
-                "func": "{label}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language.value,
-                "attrs": ["language"],
-                "func": "{language}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.sense.value,
-                "attrs": ["sense"],
-                "func": "{sense}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Edge,
-                "name": AssertionIndexBy.relation.value,
-                "attrs": ["relation"],
-                "func": "{relation}",
-                "duplicates": True,
-            },
-        ]
-        for index in indexes:
-            self.ensure_index(**index)
+
+        ensure_indexes(self._db)
+
         self._training_samples = {
             Concept: [],
             Assertion: [],
