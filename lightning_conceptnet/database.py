@@ -159,13 +159,14 @@ class LightningConceptNetDatabase(legdb.database.Database):
             self,
             path: Union[Path, str],
             db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ_WRITE,
-            config: Optional[Mapping[str, Any]] = None
+            config: Optional[Mapping[str, Any]] = None,
+            n_jobs: int = len(os.sched_getaffinity(0)),
     ):
         if config is None:
             config = {}
         config.setdefault("readahead", False)
         config.setdefault("subdir", False)
-        super().__init__(path=path, db_open_mode=db_open_mode, config=config)
+        super().__init__(path=path, db_open_mode=db_open_mode, config=config, n_jobs=n_jobs)
         indexes = [
             {
                 "what": legdb.Node,
