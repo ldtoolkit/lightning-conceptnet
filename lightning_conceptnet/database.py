@@ -160,7 +160,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             path: Union[Path, str],
             db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ_WRITE,
             config: Optional[Mapping[str, Any]] = None,
-            n_jobs: int = len(os.sched_getaffinity(0)),
     ):
         @write_transaction
         def ensure_indexes(db, txn=None):
@@ -215,7 +214,7 @@ class LightningConceptNetDatabase(legdb.database.Database):
             config = {}
         config.setdefault("readahead", False)
         config.setdefault("subdir", False)
-        super().__init__(path=path, db_open_mode=db_open_mode, config=config, n_jobs=n_jobs)
+        super().__init__(path=path, db_open_mode=db_open_mode, config=config)
 
         ensure_indexes(self._db)
 
