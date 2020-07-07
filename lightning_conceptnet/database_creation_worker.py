@@ -29,7 +29,8 @@ class DatabaseCreationWorker:
         for edge in self._edges:
             self._db.save_edge_concepts(edge=edge, txn=txn)
         for edge in self._edges:
-            self._db.save(edge.assertion, txn=txn)
+            if edge.assertion.start is not None and edge.assertion.end is not None:
+                self._db.save(edge.assertion, txn=txn)
         self._db.sync()
         self._edges.clear()
 

@@ -85,6 +85,16 @@ EdgeTupleGenerator = Generator[EdgeTuple, None, None]
 
 class AssertionIndexBy(Enum):
     relation = "by_relation"
+    start_language_label_sense = "by_start_language_label_sense"
+    end_language_label_sense = "by_end_language_label_sense"
+    start_language_label = "by_start_language_label"
+    end_language_label = "by_end_language_label"
+    start_label = "by_start_label"
+    end_label = "by_end_label"
+    start_language = "by_start_language"
+    end_language = "by_end_language"
+    start_sense = "by_start_sense"
+    end_sense = "by_end_sense"
 
 
 class ConceptIndexBy(Enum):
@@ -197,6 +207,76 @@ class LightningConceptNetDatabase(legdb.database.Database):
                     "name": ConceptIndexBy.sense.value,
                     "attrs": ["sense"],
                     "func": "{sense}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language_label_sense.value,
+                    "attrs": ["start[language]", "start[label]", "start[sense]"],
+                    "func": "!{start[language]}|{start[label]}|{start[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language_label_sense.value,
+                    "attrs": ["end[language]", "end[label]", "end[sense]"],
+                    "func": "!{end[language]}|{end[label]}|{end[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language_label.value,
+                    "attrs": ["start[language]", "start[label]"],
+                    "func": "!{start[language]}|{start[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language_label.value,
+                    "attrs": ["end[language]", "end[label]"],
+                    "func": "!{end[language]}|{end[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_label.value,
+                    "attrs": ["start[label]"],
+                    "func": "{start[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_label.value,
+                    "attrs": ["end[label]"],
+                    "func": "{end[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language.value,
+                    "attrs": ["start[language]"],
+                    "func": "{start[language]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language.value,
+                    "attrs": ["end[language]"],
+                    "func": "{end[language]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_sense.value,
+                    "attrs": ["start[sense]"],
+                    "func": "{start[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_sense.value,
+                    "attrs": ["end[sense]"],
+                    "func": "{end[sense]}",
                     "duplicates": True,
                 },
                 {
@@ -353,6 +433,8 @@ class LightningConceptNetDatabase(legdb.database.Database):
             end_concept_id = self._initial_save_concept(edge.end_concept, txn=txn)
             edge.assertion.start_id = start_concept_id
             edge.assertion.end_id = end_concept_id
+            edge.assertion.start = edge.start_concept
+            edge.assertion.end = edge.end_concept
 
     def _start_database_creation_workers(self, languages: Optional[Collection[str]]):
         self._context = zmq.Context()
