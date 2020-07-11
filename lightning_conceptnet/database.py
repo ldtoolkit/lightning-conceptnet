@@ -68,6 +68,9 @@ class Assertion(legdb.Edge):
     _node_class = Concept
 
 
+Concept._edge_class = Assertion
+
+
 CSVLineTuple = Tuple[str, str, str, str]
 CSVLineTupleGenerator = Generator[CSVLineTuple, None, None]
 Transaction = legdb.Transaction
