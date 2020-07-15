@@ -34,6 +34,8 @@ class Concept(legdb.Node):
 
     @property
     def sense_label(self) -> str:
+        if not self.sense:
+            return ""
         result = self.sense[0]
         if len(self.sense) > 1 and self.sense[1] in ("wp", "wn"):
             result += ", " + self.sense[-1]
@@ -155,11 +157,6 @@ def get_db_path(path_hint: Union[Path, str], db_open_mode: legdb.DbOpenMode) -> 
         return _get_db_path_for_db_read_write(path_hint=path_to_check)
     else:
         raise ValueError(f"db_open_mode not supported: '{db_open_mode}")
-
-
-def _to_snake_case(s: str) -> str:
-    regex = re.compile('((?<=[a-z0-9])[A-Z]|(?!^)[A-Z](?=[a-z]))')
-    return regex.sub(r'_\1', s).lower()
 
 
 ZSTD_COMPRESSION_DICT_SIZE = 2**27  # 128 MiB
