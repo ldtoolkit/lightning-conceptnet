@@ -3,6 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../babelnet-lite.py" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../conceptnet-benchmark" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../conceptnet-lite" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../pynndb2" vcs="Git" />
   </component>
