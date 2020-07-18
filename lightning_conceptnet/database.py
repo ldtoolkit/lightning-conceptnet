@@ -1,28 +1,23 @@
 from __future__ import annotations
 
-from multiprocessing import Process
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Union, Optional, Generator, Tuple, Mapping, Any, List, Collection, Dict, Type, NamedTuple
 import csv
-import re
 import sys
-import os
 
-import zmq
 from loguru import logger
+from pynndb import write_transaction
 from tqdm import tqdm
 import legdb
 import legdb.database
 import orjson
 
-from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
 from lightning_conceptnet.nodes import standardized_concept_uri
 from lightning_conceptnet.uri import uri_to_label, split_uri, get_uri_language
-from pynndb import write_transaction
 
 
 @dataclass
@@ -314,7 +309,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             Concept: 0,
             Assertion: 0,
         }
-        self._worker_processes = []
 
     def compress(
             self,
@@ -436,21 +430,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             edge.assertion.start = edge.start_concept
             edge.assertion.end = edge.end_concept
 
-    def _start_database_creation_workers(self, languages: Optional[Collection[str]]):
-        self._context = zmq.Context()
-        self._socket = self._context.socket(zmq.PUSH)
-        address = "tcp://127.0.0.1"
-        port = self._socket.bind_to_random_port(address)
-        for worker_i in range(len(os.sched_getaffinity(0)) - 1):
-            worker = DatabaseCreationWorker(f"{address}:{port}", database_path=self._path, config=self._config)
-            worker_process = Process(target=worker.run, args=(languages, ))
-            worker_process.start()
-            self._worker_processes.append(worker_process)
-
-    def _stop_database_creation_workers(self):
-        for worker_process in self._worker_processes:
-            worker_process.terminate()
-
     @staticmethod
     def line_count(file_path):
         f = open(file_path, "rb")
@@ -472,6 +451,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
             languages: Optional[Collection[str]] = None,
             compress: bool = True,
     ) -> None:
+        @write_transaction
+        def save_edges(db, txn=None):
+            for edge in edges:
+                self.save_edge_concepts(edge=edge, txn=txn)
+            for edge in edges:
+                if edge.assertion.start is not None and edge.assertion.end is not None:
+                    self.save(edge.assertion, txn=txn)
+            self.sync()
+            edges.clear()
+
         dump_path = Path(dump_path).expanduser().resolve()
 
         if edge_count is None:
@@ -480,14 +469,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
         if compress:
             self.train_compression(dump_path=dump_path, edge_count=edge_count, languages=languages)
 
-        self._start_database_creation_workers(languages=languages)
-
         logger.info("Load lightning-conceptnet database from dump")
 
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
+        edge_batch_count = 100
+        edges = []
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
-            self._socket.send_pyobj(edge_parts)
-
-        self._stop_database_creation_workers()
+            edge = self.edge_from_edge_parts(edge_parts, languages=languages)
+            edges.append(edge)
+            if len(edges) == edge_batch_count:
+                save_edges(self._db)
+        save_edges(self._db)
 
         logger.info("Lightning-conceptnet database building finished")
