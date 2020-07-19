@@ -1,11 +1,11 @@
 from pathlib import Path
-from typing import Union, Optional, Mapping, Any, Generator, Collection, TypeVar, Type, Callable
+from typing import Union, Optional, Mapping, Any, Collection, TypeVar
 
 from loguru import logger
 
 import legdb
+from legdb.step_builder import StepBuilder
 from lightning_conceptnet.database import Concept, Assertion, get_db_path, LightningConceptNetDatabase, Transaction
-from legdb import DbOpenMode
 
 
 T = TypeVar("T", Concept, Assertion)
@@ -20,41 +20,30 @@ class LightningConceptNet:
     ):
         if config is None:
             config = {}
-        database_size = 2 ** 35
+        database_size = 2 ** 28
         config.setdefault("map_size", database_size)
         path = get_db_path(path_hint=path_hint, db_open_mode=db_open_mode)
         self._db = LightningConceptNetDatabase(path=path, db_open_mode=db_open_mode, config=config)
 
-    def seek_one(
-            self,
-            entity: Union[Concept, Assertion],
-            txn: Optional[Transaction] = None,
-    ) -> Union[Concept, Assertion]:
-        return self._db.seek_one(entity=entity, txn=txn)
+    @property
+    def read_transaction(self) -> Transaction:
+        return self._db.read_transaction
 
-    def seek(
-            self,
-            entity: Union[Concept, Assertion],
-            txn: Optional[Transaction] = None,
-    ) -> Generator[Union[Concept, Assertion], None, None]:
-        yield from self._db.seek(entity=entity, txn=txn)
+    def concept(self, txn: Transaction):
+        return StepBuilder(
+            database=self._db,
+            node_cls=Concept,
+            edge_cls=Assertion,
+            txn=txn,
+        ).source(Concept)
 
-    def range(
-            self,
-            lower: Optional[Union[Concept, Assertion]] = None,
-            upper: Optional[Union[Concept, Assertion]] = None,
-            index_name: Optional[str] = None,
-            inclusive: bool = True) -> Generator[Union[Concept, Assertion], None, None]:
-        yield from self._db.range(lower=lower, upper=upper, index_name=index_name, inclusive=inclusive)
-
-    def find(
-            self,
-            what: Type[T],
-            index_name: Optional[str] = None,
-            expression: Optional[Callable[[T], bool]] = None,
-            txn: Optional[Transaction] = None,
-    ) -> Generator[T, None, None]:
-        yield from self._db.find(what=what, index_name=index_name, expression=expression, txn=txn)
+    def assertion(self, txn: Transaction):
+        return StepBuilder(
+            database=self._db,
+            node_cls=Concept,
+            edge_cls=Assertion,
+            txn=txn,
+        ).source(Assertion)
 
     def load(
             self,

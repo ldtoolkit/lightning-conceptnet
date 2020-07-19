@@ -1,23 +1,19 @@
 from __future__ import annotations
 
-from multiprocessing import Process
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Union, Optional, Generator, Tuple, Mapping, Any, List, Collection, Dict, Type, NamedTuple
 import csv
-import re
 import sys
-import os
 
-import zmq
 from loguru import logger
+from pynndb import write_transaction
 from tqdm import tqdm
 import legdb
 import legdb.database
 import orjson
 
-from lightning_conceptnet.database_creation_worker import DatabaseCreationWorker
 from lightning_conceptnet.exceptions import (
     raise_file_exists_error, raise_file_not_found_error, raise_is_a_directory_error)
 from lightning_conceptnet.nodes import standardized_concept_uri
@@ -33,18 +29,20 @@ class Concept(legdb.Node):
 
     @property
     def sense_label(self) -> str:
+        if not self.sense:
+            return ""
         result = self.sense[0]
         if len(self.sense) > 1 and self.sense[1] in ("wp", "wn"):
             result += ", " + self.sense[-1]
         return result
 
     @classmethod
-    def from_uri(cls: Type[Concept], uri: str, db: Optional[LightningConceptNetDatabase] = None) -> Concept:
+    def from_uri(cls: Type[Concept], uri: str, database: Optional[LightningConceptNetDatabase] = None) -> Concept:
         label = uri_to_label(uri)
         language = get_uri_language(uri)
         pieces = split_uri(uri)
         sense = pieces[3:]
-        return cls(db=db, label=label, language=language, sense=sense)
+        return cls(database=database, label=label, language=language, sense=sense)
 
     @property
     def uri(self) -> str:
@@ -67,6 +65,9 @@ class Assertion(legdb.Edge):
     _node_class = Concept
 
 
+Concept._edge_class = Assertion
+
+
 CSVLineTuple = Tuple[str, str, str, str]
 CSVLineTupleGenerator = Generator[CSVLineTuple, None, None]
 Transaction = legdb.Transaction
@@ -84,6 +85,16 @@ EdgeTupleGenerator = Generator[EdgeTuple, None, None]
 
 class AssertionIndexBy(Enum):
     relation = "by_relation"
+    start_language_label_sense = "by_start_language_label_sense"
+    end_language_label_sense = "by_end_language_label_sense"
+    start_language_label = "by_start_language_label"
+    end_language_label = "by_end_language_label"
+    start_label = "by_start_label"
+    end_label = "by_end_label"
+    start_language = "by_start_language"
+    end_language = "by_end_language"
+    start_sense = "by_start_sense"
+    end_sense = "by_end_sense"
 
 
 class ConceptIndexBy(Enum):
@@ -143,11 +154,6 @@ def get_db_path(path_hint: Union[Path, str], db_open_mode: legdb.DbOpenMode) -> 
         raise ValueError(f"db_open_mode not supported: '{db_open_mode}")
 
 
-def _to_snake_case(s: str) -> str:
-    regex = re.compile('((?<=[a-z0-9])[A-Z]|(?!^)[A-Z](?=[a-z]))')
-    return regex.sub(r'_\1', s).lower()
-
-
 ZSTD_COMPRESSION_DICT_SIZE = 2**27  # 128 MiB
 ZSTD_COMPRESSION_LEVEL = 3
 ZSTD_SAMPLES_SIZE = 2**27  # 128 MiB
@@ -158,53 +164,135 @@ class LightningConceptNetDatabase(legdb.database.Database):
             self,
             path: Union[Path, str],
             db_open_mode: legdb.DbOpenMode = legdb.DbOpenMode.READ_WRITE,
-            config: Optional[Mapping[str, Any]] = None
+            config: Optional[Mapping[str, Any]] = None,
     ):
+        @write_transaction
+        def ensure_indexes(db, txn=None):
+            indexes = [
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language_label_sense.value,
+                    "attrs": ["language", "label", "sense"],
+                    "func": "!{language}|{label}|{sense}",
+                    "duplicates": False,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language_label.value,
+                    "attrs": ["language", "label"],
+                    "func": "!{language}|{label}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.label.value,
+                    "attrs": ["label"],
+                    "func": "{label}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.language.value,
+                    "attrs": ["language"],
+                    "func": "{language}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Node,
+                    "name": ConceptIndexBy.sense.value,
+                    "attrs": ["sense"],
+                    "func": "{sense}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language_label_sense.value,
+                    "attrs": ["start[language]", "start[label]", "start[sense]"],
+                    "func": "!{start[language]}|{start[label]}|{start[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language_label_sense.value,
+                    "attrs": ["end[language]", "end[label]", "end[sense]"],
+                    "func": "!{end[language]}|{end[label]}|{end[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language_label.value,
+                    "attrs": ["start[language]", "start[label]"],
+                    "func": "!{start[language]}|{start[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language_label.value,
+                    "attrs": ["end[language]", "end[label]"],
+                    "func": "!{end[language]}|{end[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_label.value,
+                    "attrs": ["start[label]"],
+                    "func": "{start[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_label.value,
+                    "attrs": ["end[label]"],
+                    "func": "{end[label]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_language.value,
+                    "attrs": ["start[language]"],
+                    "func": "{start[language]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_language.value,
+                    "attrs": ["end[language]"],
+                    "func": "{end[language]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.start_sense.value,
+                    "attrs": ["start[sense]"],
+                    "func": "{start[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.end_sense.value,
+                    "attrs": ["end[sense]"],
+                    "func": "{end[sense]}",
+                    "duplicates": True,
+                },
+                {
+                    "what": legdb.Edge,
+                    "name": AssertionIndexBy.relation.value,
+                    "attrs": ["relation"],
+                    "func": "{relation}",
+                    "duplicates": True,
+                },
+            ]
+            for index in indexes:
+                self.ensure_index(**index, txn=txn)
+
         if config is None:
             config = {}
         config.setdefault("readahead", False)
         config.setdefault("subdir", False)
         super().__init__(path=path, db_open_mode=db_open_mode, config=config)
-        indexes = [
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language_label_sense.value,
-                "func": "!{language}|{label}|{sense}",
-                "duplicates": False,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language_label.value,
-                "func": "!{language}|{label}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.label.value,
-                "func": "{label}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.language.value,
-                "func": "{language}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Node,
-                "name": ConceptIndexBy.sense.value,
-                "func": "{sense}",
-                "duplicates": True,
-            },
-            {
-                "what": legdb.Edge,
-                "name": AssertionIndexBy.relation.value,
-                "func": "{relation}",
-                "duplicates": True,
-            },
-        ]
-        for index in indexes:
-            self.ensure_index(**index)
+
+        ensure_indexes(self._db)
+
         self._training_samples = {
             Concept: [],
             Assertion: [],
@@ -221,7 +309,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             Concept: 0,
             Assertion: 0,
         }
-        self._worker_processes = []
 
     def compress(
             self,
@@ -243,33 +330,6 @@ class LightningConceptNetDatabase(legdb.database.Database):
             threads=threads,
             txn=txn,
         )
-
-    def get_indexes(self, entity: Union[Concept, Assertion]) -> List[str]:
-        result = []
-        if isinstance(entity, Concept):
-            if entity.language is not None and entity.label is not None and entity.sense is not None:
-                result.append(ConceptIndexBy.language_label_sense.value)
-            else:
-                if entity.language is not None and entity.label is not None:
-                    result.append(ConceptIndexBy.language_label.value)
-                else:
-                    if entity.label is not None:
-                        result.append(ConceptIndexBy.label.value)
-                    if entity.language is not None:
-                        result.append(ConceptIndexBy.language.value)
-                if entity.sense is not None:
-                    result.append(ConceptIndexBy.sense.value)
-        elif isinstance(entity, Assertion):
-            if entity.start_id is not None and entity.end_id is not None:
-                result.append(legdb.IndexBy.start_id_end_id.value)
-            else:
-                if entity.start_id is not None:
-                    result.append(legdb.IndexBy.start_id.value)
-                elif entity.end_id is not None:
-                    result.append(legdb.IndexBy.end_id.value)
-            if entity.relation is not None:
-                result.append(AssertionIndexBy.relation.value)
-        return result
 
     @staticmethod
     def _edge_parts(dump_path: Path, count: Optional[int] = None) -> CSVLineTupleGenerator:
@@ -306,16 +366,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
                 external_url=external_url,
             )
 
-    def _initial_save_concept(self, concept: Concept, txn: Transaction) -> bytes:
-        result = self.seek_one(concept, index_name=ConceptIndexBy.language_label_sense.value, txn=txn)
+    def _initial_save_concept(self, concept: Concept, txn: Transaction) -> str:
+        result = self.node_table.seek_one(ConceptIndexBy.language_label_sense.value, concept.to_doc(), txn=txn)
         if result is None:
             oid = self.save(concept, return_oid=True, txn=txn)
         else:
-            oid = result.oid
+            oid = result.key
         return oid
 
-    def _add_external_url_to_concept(self, concept_oid: bytes, url: str, txn: Transaction) -> None:
-        concept = self.get(Concept, concept_oid, txn=txn)
+    def _add_external_url_to_concept(self, concept_oid: str, url: str, txn: Transaction) -> None:
+        concept = self.get(Concept, concept_oid.encode(), txn=txn)
         if concept.external_url is None:
             concept.external_url = []
         concept.external_url.append(url)
@@ -343,6 +403,11 @@ class LightningConceptNetDatabase(legdb.database.Database):
             edge_count: Optional[int] = None,
             languages: Optional[Collection[str]] = None,
     ):
+        @write_transaction
+        def compress(db, txn=None):
+            self.compress(legdb.Node, training_samples=self._training_samples[Concept], txn=txn)
+            self.compress(legdb.Edge, training_samples=self._training_samples[Assertion], txn=txn)
+
         logger.info("Collect samples for training compression")
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
@@ -352,8 +417,7 @@ class LightningConceptNetDatabase(legdb.database.Database):
                 self._append_sample(edge.end_concept, edge_count=edge_count)
             self._append_sample(edge.assertion, edge_count=edge_count)
         logger.info("Train compression")
-        self.compress(legdb.Node, training_samples=self._training_samples[Concept])
-        self.compress(legdb.Edge, training_samples=self._training_samples[Assertion])
+        compress(self._db)
 
     def save_edge_concepts(self, edge: EdgeTuple, txn: Transaction):
         start_concept_id = self._initial_save_concept(edge.start_concept, txn=txn)
@@ -363,21 +427,8 @@ class LightningConceptNetDatabase(legdb.database.Database):
             end_concept_id = self._initial_save_concept(edge.end_concept, txn=txn)
             edge.assertion.start_id = start_concept_id
             edge.assertion.end_id = end_concept_id
-
-    def _start_database_creation_workers(self, languages: Optional[Collection[str]]):
-        self._context = zmq.Context()
-        self._socket = self._context.socket(zmq.PUSH)
-        address = "tcp://127.0.0.1"
-        port = self._socket.bind_to_random_port(address)
-        for worker_i in range(len(os.sched_getaffinity(0)) - 1):
-            worker = DatabaseCreationWorker(f"{address}:{port}", database_path=self._path, config=self._config)
-            worker_process = Process(target=worker.run, args=(languages, ))
-            worker_process.start()
-            self._worker_processes.append(worker_process)
-
-    def _stop_database_creation_workers(self):
-        for worker_process in self._worker_processes:
-            worker_process.terminate()
+            edge.assertion.start = edge.start_concept
+            edge.assertion.end = edge.end_concept
 
     @staticmethod
     def line_count(file_path):
@@ -400,6 +451,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
             languages: Optional[Collection[str]] = None,
             compress: bool = True,
     ) -> None:
+        @write_transaction
+        def save_edges(db, txn=None):
+            for edge in edges:
+                self.save_edge_concepts(edge=edge, txn=txn)
+            for edge in edges:
+                if edge.assertion.start is not None and edge.assertion.end is not None:
+                    self.save(edge.assertion, txn=txn)
+            self.sync()
+            edges.clear()
+
         dump_path = Path(dump_path).expanduser().resolve()
 
         if edge_count is None:
@@ -408,14 +469,16 @@ class LightningConceptNetDatabase(legdb.database.Database):
         if compress:
             self.train_compression(dump_path=dump_path, edge_count=edge_count, languages=languages)
 
-        self._start_database_creation_workers(languages=languages)
-
         logger.info("Load lightning-conceptnet database from dump")
 
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
+        edge_batch_count = 100
+        edges = []
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
-            self._socket.send_pyobj(edge_parts)
-
-        self._stop_database_creation_workers()
+            edge = self.edge_from_edge_parts(edge_parts, languages=languages)
+            edges.append(edge)
+            if len(edges) == edge_batch_count:
+                save_edges(self._db)
+        save_edges(self._db)
 
         logger.info("Lightning-conceptnet database building finished")
