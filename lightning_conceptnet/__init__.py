@@ -62,8 +62,6 @@ def build(
         languages: Optional[Collection[str]] = None,
         compress: bool = True,
 ):
-    import stackprinter
-    stackprinter.set_excepthook(style='darkbg2')
     logger.info("Create lightning-conceptnet database")
     config = {"readahead": False, "subdir": False}
     lcn = LightningConceptNet(database_path_hint, db_open_mode=legdb.DbOpenMode.CREATE, config=config)
