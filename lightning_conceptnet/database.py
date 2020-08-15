@@ -452,14 +452,10 @@ class LightningConceptNetDatabase(legdb.database.Database):
             compress: bool = True,
     ) -> None:
         @write_transaction
-        def save_edges(db, txn=None):
-            for edge in edges:
-                self.save_edge_concepts(edge=edge, txn=txn)
-            for edge in edges:
-                if edge.assertion.start is not None and edge.assertion.end is not None:
-                    self.save(edge.assertion, txn=txn)
-            self.sync()
-            edges.clear()
+        def save_edge(db, txn=None):
+            self.save_edge_concepts(edge=edge, txn=txn)
+            if edge.assertion.start is not None and edge.assertion.end is not None:
+                self.save(edge.assertion, txn=txn)
 
         dump_path = Path(dump_path).expanduser().resolve()
 
@@ -472,13 +468,8 @@ class LightningConceptNetDatabase(legdb.database.Database):
         logger.info("Load lightning-conceptnet database from dump")
 
         edge_parts = enumerate(self._edge_parts(dump_path=dump_path, count=edge_count))
-        edge_batch_count = 100
-        edges = []
         for _, edge_parts in tqdm(edge_parts, unit=' edges', total=edge_count):
             edge = self.edge_from_edge_parts(edge_parts, languages=languages)
-            edges.append(edge)
-            if len(edges) == edge_batch_count:
-                save_edges(self._db)
-        save_edges(self._db)
+            save_edge(self._db)
 
         logger.info("Lightning-conceptnet database building finished")
